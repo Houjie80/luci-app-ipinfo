@@ -1,81 +1,112 @@
+/* This is free software, licensed under the Apache License, Version 2.0
+ *
+ * Copyright (C) 2024 Hilman Maulana <hilman0.0maulana@gmail.com>
+ */
+
 'use strict';
 'require view';
 'require uci';
+'require fs';
 
 return view.extend({
-  title: _('IP Information'),
-  handleSaveApply: null,
-  handleSave: null,
-  handleReset: null,
-  load: function () {
-    // Initialize the 'this' variable for access within promises
-    var self = this;
-
-    // Create a URL with the desired fields
-    var apiUrl = '/cgi-bin/luci/admin/services/ipinfo/ipstatus';
-
-    // Create a new XHR object
-    var xhr = new XMLHttpRequest();
-
-    // Configure the request
-    xhr.open('GET', apiUrl, true);
-
-    // Set up an event listener for when the request is complete
-    xhr.onload = function () {
-      if (xhr.status === 200) {
-        var data = JSON.parse(xhr.responseText);
-        self.ipData = data; // Save IP data to the 'ipData' variable
-      } else {
-        // Handle error
-        console.error('Failed to fetch IP data:', xhr.status, xhr.statusText);
-      }
-    };
-
-    // Send the request
-    xhr.send();
-
-    // Use UCI to fetch the 'ipinfo' configuration from OpenWrt or LEDE system
-    return uci.load('ipinfo').then(function () {
-      self.ipInfoConfig = uci.get('ipinfo', 'config');
-    });
-  },
-  render: function (data) {
-    if (!this.ipData || !this.ipInfoConfig) {
-      // If IP data or 'ipinfo' configuration is not available yet, display a loading message or other content
-      return 'Loading IP information...';
-    }
-
-    // Create a table with selected information from ip-api.com
-    var table = E('table', { 'class': 'table' });
-
-    // List of properties to display with corresponding labels
-    var propertiesToShow = {
-      'Public IP': 'query',
-      'Provider': 'isp',
-      'AS Name': 'asname',
-      'AS Number': 'as',
-      'City': 'city',
-      'Region': 'regionName',
-      'Country': 'country',
-      'Continent': 'continent',
-      'Latitude': 'lat',
-      'Longitude': 'lon',
-      'Offset': 'offset'
-    };
-
-    // Iterate through properties to display
-    for (var label in propertiesToShow) {
-      if (propertiesToShow.hasOwnProperty(label)) {
-        var key = propertiesToShow[label];
-        var value = this.ipData[key];
-
-        // Check 'ipinfo' configuration to determine if this value should be printed
-        if (value !== undefined && this.ipInfoConfig[key] === '1') {
-          table.appendChild(E('tr', { 'class': 'tr' }, [E('td', { 'class': 'td left', 'width': '33%' }, [label]), E('td', { 'class': 'td left' }, [value])]));
-        }
-      }
-    }
-
-    return table;
-  }
+	title: _('IP Information'),
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null,
+	load: function () {
+		return uci.load('ipinfo').then(function() {
+			var data = uci.sections('ipinfo');
+			var jsonData = {};
+			if (data[0].enable === '0') {
+				jsonData.uci = {
+					enable: data[0].enable
+				};
+				return jsonData;
+			} else {
+				return fs.exec('curl', ['-s', '-m', '5', '-o', '/dev/null', 'https://www.google.com']).then(function(result) {
+					if (result.code === 0) {
+						if (data.length > 0) {
+							var item = data[0];
+							jsonData.uci = {
+								enable: item.enable,
+								isp: item.isp,
+								loc: item.loc,
+								co: item.co
+							};
+						} else {
+							jsonData.uci = null;
+						};
+						return fs.exec('curl', ['-sL', 'ip.guide']).then(function(result) {
+							var data = JSON.parse(result.stdout);
+							jsonData.json = data;
+							return jsonData;
+						});
+					} else {
+						return jsonData;
+					};
+				});
+			};
+		});
+	},
+	render: function (data) {
+		var container;
+		var table = E('table', {'class': 'table'});
+		if (!data || Object.keys(data).length === 0) {
+			var row = E('tr', {'class': 'tr'}, [
+				E('td', {'class': 'td'}, _('No internet connection.'))
+			]);
+			table.appendChild(row);
+			return table;
+		} else if (data.uci && data.uci.enable === '1') {
+			var hasData = false;
+			var categories = ['isp', 'loc', 'co'];
+			var propertiesToShow = {
+				'ip': _('Public IP'),
+				'network.autonomous_system.name': _('Provider'),
+				'network.autonomous_system.organization': _('Organization'),
+				'network.autonomous_system.asn': _('ASN Number'),
+				'location.city': _('City'),
+				'location.country': _('Country'),
+				'location.timezone': _('Timezone'),
+				'location.latitude': _('Latitude'),
+				'location.longitude': _('Longitude')
+			};
+			var dataUci = {
+				'ip': 'ip',
+				'network.autonomous_system.name': 'name',
+				'network.autonomous_system.organization': 'organization',
+				'network.autonomous_system.asn': 'asn',
+				'location.city': 'city',
+				'location.country': 'country',
+				'location.timezone': 'timezone',
+				'location.latitude': 'latitude',
+				'location.longitude': 'longitude'
+			};
+			categories.forEach(function(category) {
+				if (data.uci[category]) {
+					data.uci[category].forEach(function(key) {
+						var propKey = Object.keys(dataUci).find(k => dataUci[k] === key);
+						if (propKey) {
+							hasData = true;
+							var value = propKey.split('.').reduce((o, i) => o ? o[i] : null, data.json);
+							var row = E('tr', {'class': 'tr'}, [
+								E('td', {'class': 'td left', 'width': '33%'}, propertiesToShow[propKey]),
+								E('td', {'class': 'td left'}, value || '-')
+							]);
+							table.appendChild(row);
+						}
+					});
+				}
+			});
+			if (!hasData) {
+				var row = E('tr', {'class': 'tr'}, [
+					E('td', {'class': 'td'}, _('No data available, please check the settings.'))
+				]);
+				table.appendChild(row);
+			}
+			return table;
+		} else if (data.uci && data.uci.enable !== '1') {
+			return container;
+		};
+	}
 });
